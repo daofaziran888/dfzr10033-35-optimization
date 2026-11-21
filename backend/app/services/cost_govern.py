@@ -13,7 +13,10 @@ class CostGovernService(BaseModuleService):
     MODULE = "cost_govern"
     ENTITY = "配额策略"
     OPERATION_TERM = "查询"
-    LIST_FIELDS = ["策略编号", "适用角色", "查询上限", "并发上限", "月度配额", "告警阈值", "限流动作", "生效时段"]
+    LIST_FIELDS = [
+        "策略编号", "适用角色", "查询上限", "并发上限", "月度配额",
+        "已用扫描量", "用量占比", "结算口径", "告警阈值", "限流动作", "生效时段",
+    ]
     REQUIRED_FIELDS = ["策略编号", "适用角色"]
     STATUS_ORDER = ["草稿", "已生效", "已告警", "已停用"]
     ACTION_RULES = {"启效策略": "已生效", "触发限流": "已告警", "停用策略": "已停用"}
@@ -80,28 +83,37 @@ class CostGovernService(BaseModuleService):
             "module_breakdown": {k: v for k, v in sorted(module_costs.items())},
         }
 
-    def check_monthly_quota(self) -> dict[str, Any]:
-        """检查月度配额：读取 cost_govern 策略和 query_audit 当月使用量，超限时触发 freshness_mon 告警。"""
-        policies = store.rows(self.MODULE)
+    def check_monthly_quota(self, month: str | None = None) -> dict[str, Any]:
+        """检查月度配额：直接读取结算明细回写的 ``已用扫描量``，不再重扫审计。
+
+        月度用量由 ``settlement`` 批次增量归集后写回策略行；这里只做阈值判断，
+        因此查询成本不再随审计表增长而线性上升。
+        """
+        from app.services.settlement import service as settlement
+
+        month = month or time.strftime("%Y-%m")
+        policies = [p for p in store.rows(self.MODULE) if p.get("生效时段") == month]
+        sheet = settlement.quota_sheet(month)
+        usage_by_key = {line["额度键"]: line for line in sheet["lines"]}
         overused: list[dict[str, Any]] = []
 
         for policy in policies:
+            key = f"{policy.get('适用角色', '')}@{policy.get('生效时段', '')}"
+            line = usage_by_key.get(key)
+            usage = line["已用扫描量"] if line else int(policy.get("已用扫描量") or 0)
             try:
                 quota = int(policy.get("月度配额", "0"))
-                alert = int(policy.get("告警阈值", "0"))
             except (ValueError, TypeError):
                 continue
-
             if quota <= 0:
                 continue
-
-            # 统计当月使用量
-            usage = _estimate_monthly_usage(policy.get("适用角色", ""))
             ratio = usage / quota
-
+            policy["已用扫描量"] = str(usage)
+            policy["用量占比"] = f"{ratio:.1%}"
             if ratio > 0.8:
                 policy["status"] = "已告警"
                 policy["pending"] = True
+                policy["abnormal"] = ratio > 1.0
                 overused.append({
                     "policy_id": policy["id"],
                     "角色": policy.get("适用角色"),
@@ -109,29 +121,17 @@ class CostGovernService(BaseModuleService):
                     "usage": usage,
                     "ratio": round(ratio, 2),
                 })
-
                 # 触发 freshness_mon 通知
                 _notify_quota_alert(policy["id"], policy.get("适用角色", ""), ratio)
 
         return {
             "ok": True,
+            "month": month,
+            "source": "settlement_detail",
             "total_policies": len(policies),
             "overused_count": len(overused),
             "overused": overused[:10],
         }
-
-
-def _estimate_monthly_usage(role: str) -> int:
-    audits = store.rows("query_audit")
-    count = 0
-    for a in audits:
-        if role in str(a.get("数据来源", "")) or role in str(a.get("适用角色", "")):
-            scanned_str = a.get("扫描行数", "0")
-            try:
-                count += int(scanned_str)
-            except (ValueError, TypeError):
-                pass
-    return max(count, 100)
 
 
 def _notify_quota_alert(policy_id: int, role: str, ratio: float) -> None:

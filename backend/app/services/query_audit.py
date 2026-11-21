@@ -13,7 +13,10 @@ class QueryAuditService(BaseModuleService):
     MODULE = "query_audit"
     ENTITY = "审计记录"
     OPERATION_TERM = "查询"
-    LIST_FIELDS = ["记录编号", "查询语句", "执行耗时", "扫描行数", "返回行数", "数据来源", "操作用户", "查询时间"]
+    LIST_FIELDS = [
+        "记录编号", "查询语句", "执行耗时", "扫描行数", "返回行数",
+        "数据来源", "操作用户", "查询时间", "业务月", "入账月", "结算状态",
+    ]
     REQUIRED_FIELDS = ["记录编号", "查询语句"]
     STATUS_ORDER = ["正常", "慢查询", "已终止", "已审计"]
     ACTION_RULES = {"标记慢查询": "慢查询", "终止查询": "已终止", "标记审计": "已审计"}
@@ -145,6 +148,96 @@ class QueryAuditService(BaseModuleService):
         _write_report_to_mart(report)
 
         return {"ok": True, "report": report}
+
+
+
+    # ---------------------------------------------------------- 月结对账
+
+    def reconcile_against_settlement(self, business_month: str) -> dict[str, Any]:
+        """用月度扫描对账批次核对各次执行的计入范围。
+
+        查询审计是执行事实源，结算明细是入账事实源；这里按 ``审计记录id``
+        一一比对。核对结果回写到结算明细的 ``核对状态`` 与审计记录，
+        未入账记录重新送入暂存区，等待补报批次。
+        """
+        from app.services.settlement import (
+            DETAIL_STATUS_INCLUDED,
+            DETAIL_MODULE,
+            service as settlement,
+        )
+
+        result = settlement.record_reconcile(business_month, operator="query_audit")
+        missing_ids = {item["audit_id"] for item in result["missing"]}
+        duplicated_ids = {item["audit_id"] for item in result["duplicated"]}
+
+        details = [d for d in store.rows(DETAIL_MODULE) if d.get("业务月") == business_month]
+        for detail in details:
+            audit_id = int(detail.get("审计记录id", 0))
+            if detail.get("status") != DETAIL_STATUS_INCLUDED:
+                detail["核对状态"] = "已冲销"
+            elif audit_id in duplicated_ids:
+                detail["核对状态"] = "重复入账"
+                detail["abnormal"] = True
+                detail["pending"] = True
+            elif audit_id in missing_ids:
+                detail["核对状态"] = "未入账"
+                detail["pending"] = True
+            else:
+                detail["核对状态"] = "已核对"
+                detail["pending"] = False
+
+        covered_ids = {
+            int(d.get("审计记录id", 0)) for d in details
+            if d.get("核对状态") == "已核对"
+        }
+        for audit in store.rows(self.MODULE):
+            audit_id = int(audit.get("id", 0))
+            if audit_id in missing_ids:
+                audit["结算核对"] = "未入账"
+                audit["核对月份"] = business_month
+            elif audit_id in covered_ids:
+                audit["结算核对"] = "已核对"
+                audit["核对月份"] = business_month
+
+        prepared = settlement.recheck_unbooked(business_month)
+        if result.get("record"):
+            result["record"]["未入账清单"] = ", ".join(
+                str(item.get("记录编号")) for item in prepared["items"][:10])
+        return {
+            "ok": True,
+            "business_month": business_month,
+            "reconcile": result,
+            "record": result.get("record"),
+            "details_checked": len(details),
+            "unbooked_prepared": prepared["unbooked"],
+            "staged": prepared["staged"],
+            "unbooked": prepared["items"][:50],
+        }
+
+    def prepare_unbooked(self, business_month: str) -> dict[str, Any]:
+        """为未入账的审计执行重新准备数据，写入待补记暂存区。"""
+        from app.services.settlement import service as settlement
+
+        prepared = settlement.recheck_unbooked(business_month)
+        status = "有差异" if prepared["unbooked"] else "已核对"
+        for audit in store.rows(self.MODULE):
+            audit_id = int(audit.get("id", 0))
+            if any(item["audit_id"] == audit_id for item in prepared["items"]):
+                audit["结算核对"] = "待补记"
+                audit["核对月份"] = business_month
+            else:
+                audit.setdefault("结算核对", status)
+        return {
+            "ok": True,
+            "business_month": business_month,
+            "unbooked": prepared["unbooked"],
+            "staged": prepared["staged"],
+            "items": prepared["items"][:50],
+            "message": (
+                f"{prepared['unbooked']} 条执行未入账，已重新准备暂存数据"
+                if prepared["unbooked"] else "该业务月执行均已入账"
+            ),
+        }
 
 
 def _record_slow_query_cost(slow_count: int, threshold_ms: int) -> None:

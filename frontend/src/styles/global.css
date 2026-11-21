@@ -70,3 +70,14 @@ body { margin: 0; background: #f6f8fb; color: #1f2937; }
 .analysis-chart { display: flex; align-items: flex-end; gap: 8px; height: 160px; padding: 12px 0; }
 .analysis-bar { flex: 1; border-radius: 4px 4px 0 0; background: var(--brand); min-width: 24px; position: relative; transition: height 0.4s; }
 .analysis-bar span { position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--muted); white-space: nowrap; }
+/* 月度结算 */
+.settlement-page .analysis-form.vertical { flex-direction: column; align-items: stretch; }
+.settlement-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.settlement-panel { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.settlement-panel h3 { margin: 0 0 8px; font-size: 14px; }
+.settlement-banner { background: #ecfdf3; border: 1px solid #abefc6; color: #067647; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.settlement-hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.settlement-page .quota-detail td { background: #fafbfc; color: var(--muted); font-size: 12px; }
+.tag { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 11px; margin-right: 6px; }
+.tag-normal { background: #e8f1ff; color: #1f6feb; }
+.tag-late { background: #fff1e6; color: #b54708; }

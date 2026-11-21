@@ -83,3 +83,46 @@ npm run dev
 
 领域：数据工程
 子方向：数据分析与数据应用
+
+## 月度扫描结算（结算调用链）
+
+月度归集流水线按批次增量消费查询审计，不重复全表扫描：
+
+```text
+query_audit ──审计游标──▶ settlement_staging ──按批次聚合──▶ settlement_detail
+                                                            │
+                          cost_govern（月度额度） ◀──额度回写──┤
+                                                            ▼
+                                               settlement_batch（月结版本，业务月/入账月/口径）
+                                                            │
+                          query_audit ◀──计入范围回写──────────┘
+                                │
+                          settlement_report（旧报告可复查）
+```
+
+核心规则：
+
+- **增量**：批次持有 `审计游标`，只读 `store.rows_after("query_audit", cursor)`；
+  已封账批次冻结明细与口径版本，不重算历史月结。
+- **双月份**：明细同时记录 `业务月`（审计执行时间）与 `入账月`（实际计入的批次）。
+  迟到审计的业务月不变，入账月记为发现月，另开补记批次。
+- **唯一归属**：`settlement_detail` 一条执行一条明细，以 `审计记录id` 去重；
+  审计记录上的 `结算明细id / 入账月 / 计入扫描行数` 回写计入范围。
+- **口径版本**：`settlement_caliber` 按 `生效月份 ≤ 入账月 < 失效月份` 匹配，
+  每次结算与报告固化当期版本，旧报告复查时保留原快照。
+- **额度清单**：`cost_govern` 的 `已用扫描量 / 用量占比 / 结算口径` 由明细回写，
+  `check_monthly_quota` 直接读结算结果，不再重扫审计。
+
+接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/pipelines/monthly-settlement?business_month=YYYY-MM[&entry_month=YYYY-MM]` | 执行月结并封账 |
+| POST | `/api/pipelines/audit-backfill?scanned_rows=..&executed_at=..` | 迟到审计补报 |
+| POST | `/api/pipelines/audit-settlement-reconcile?business_month=YYYY-MM` | 审计 × 结算对账并重备未入账数据 |
+| GET | `/api/settlement/quota-sheet?entry_month=YYYY-MM` | 月度额度清单（含补记与原审计关联） |
+| GET | `/api/settlement/reports/{id}/review` | 复查旧报告 |
+| POST | `/api/settlement/batches/{id}/run` / `close` | 继续增量归集 / 封账 |
+
+前端「月度结算」页面（`/settlement`）提供两个月月结、跨月补报、额度清单、
+计入范围核对与旧报告复查的完整操作。

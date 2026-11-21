@@ -97,6 +97,7 @@ from app.services.query_audit import QueryAuditService
 from app.services.cost_govern import CostGovernService
 from app.services.data_contract import DataContractService
 from app.services.semantic_model import SemanticModelService
+from app.services.settlement import service as settlement_svc
 
 source_svc = SourceRegistryService()
 semantic_svc = SemanticModelService()

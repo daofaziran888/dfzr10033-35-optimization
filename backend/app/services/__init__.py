@@ -24,6 +24,14 @@ from app.services.data_lake_read import DataLakeReadService
 from app.services.result_cache import ResultCacheService
 from app.services.data_contract import DataContractService
 from app.services.ab_config import AbConfigService
+from app.services.settlement import (
+    SettlementService,
+    SettlementCaliberService,
+    SettlementDetailService,
+    SettlementReportService,
+    SettlementStagingService,
+    SettlementReconcileService,
+)
 
 SERVICES: dict[str, BaseModuleService] = {
     "source_registry": SourceRegistryService(),
@@ -48,6 +56,12 @@ SERVICES: dict[str, BaseModuleService] = {
     "result_cache": ResultCacheService(),
     "data_contract": DataContractService(),
     "ab_config": AbConfigService(),
+    "settlement_batch": SettlementService(),
+    "settlement_detail": SettlementDetailService(),
+    "settlement_report": SettlementReportService(),
+    "settlement_caliber": SettlementCaliberService(),
+    "settlement_staging": SettlementStagingService(),
+    "settlement_reconcile": SettlementReconcileService(),
 }
 
 
